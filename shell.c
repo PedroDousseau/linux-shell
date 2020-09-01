@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <readline/readline.h>
 
 #define TRUE 1
@@ -15,33 +16,31 @@
 #define READ_END 0
 #define WRITE_END 1
 
+//Memory limits
+#define CMD_BUFFER_SIZE 100
+#define ARGV_AMOUNT_OF_LINES 20
+#define FILENAME_SIZE 20
+
 int GLOBAL_PIPE[2];
 int GLOBAL_PIPE2[2];
 int ODD_PIPES = FALSE;
 
-char **parseInput(char *input) {
-  int argc = 1;
+char** parseInput(char *input) {
   int i;
-  char * cmd;
+  char* cmd = (char*) malloc(CMD_BUFFER_SIZE*sizeof(char));
 
-  for(i=0;i<strlen(input);i++) // Counts total of commands
-    if(isspace(input[i]) != 0)
-      argc++;
-
-  char **argv = (char **) malloc(argc * sizeof(char *)); // Aloccates argv
+  char **argv = (char**) malloc(ARGV_AMOUNT_OF_LINES * sizeof(char *)); // Aloccates argv
 
   i = 0;
   cmd = strtok(input, " "); // Gets first command
   while(cmd != NULL) { // Fill argv with commands
 
-    argv[i] = (char*) malloc(strlen(cmd) * sizeof(char));
+    argv[i] = (char*) malloc(CMD_BUFFER_SIZE * sizeof(char));
     argv[i] = cmd;
     i++;
 
     cmd = strtok(NULL, " ");
   }
-
-  free(cmd);
 
   argv[i] = NULL; // Terminates argv with NULL
   return argv;
@@ -52,20 +51,24 @@ void close_fd(int fd) {
     close(fd);
 }
 
-void handleAfterPipeCall(char **argv) { // First command
-  printf("Processing first command\n");
-
+void handleAfterPipeCall(char **argv, char* fileName) { // First command
   ODD_PIPES = TRUE;
 
   pid_t pid;
   pipe(GLOBAL_PIPE);
-  printf("Creating pipe 1\n");
+
   pid = fork();
 
   if(pid == 0) { //Child process
 
     close_fd(GLOBAL_PIPE[READ_END]);
     dup2(GLOBAL_PIPE[WRITE_END], STDOUT_FILENO);
+
+    if(fileName) {
+      int fd = open(fileName, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+      dup2(fd, STDIN_FILENO);
+      close(fd);
+    }
 
     if(execvp(argv[0], argv) < 0)
       printf("Error during command execution\n");
@@ -77,23 +80,20 @@ void handleAfterPipeCall(char **argv) { // First command
       int status;
       waitpid(pid, &status, 0);
 
-      printf("First command finished: Wrote output on pipe1\n");
 
   } else { // Fork error
       perror("fork()");
   }
+
 }
 
 void handlePipePipeCall(char **argv) { // Middle command
-  printf("Processing pipe pipe call\n");
 
   pid_t pid;
   if(ODD_PIPES) { // Last pipe created is GLOBAL_PIPE
     pipe(GLOBAL_PIPE2);
-    printf("Creating pipe2\n");
   } else {
     pipe(GLOBAL_PIPE);
-    printf("Creating pipe1\n");
   }
 
   pid = fork();
@@ -124,11 +124,6 @@ void handlePipePipeCall(char **argv) { // Middle command
     int status;
     waitpid(pid, &status, 0);
 
-    if(ODD_PIPES)
-      printf("Middle command finished: Read input from pipe1 and wrote output on pipe2\n");
-    else
-      printf("Middle command finished: Read input from pipe2 and wrote output on pipe1\n");
-
   } else { // Fork error
     perror("fork()");
   }
@@ -137,9 +132,7 @@ void handlePipePipeCall(char **argv) { // Middle command
 
 }
 
-void handleBeforePipeCall(char **argv) { // Last command
-
-  printf("Processing last command\n");
+void handleBeforePipeCall(char** argv, char* fileName, int append) { // Last command
 
   pid_t pid;
   pid = fork();
@@ -152,6 +145,18 @@ void handleBeforePipeCall(char **argv) { // Last command
       dup2(GLOBAL_PIPE2[READ_END], STDIN_FILENO);
     }
 
+    if(fileName) {
+
+      int fd;
+      if(append == TRUE) {
+        fd = open(fileName, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
+      } else {
+        fd = open(fileName, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+      }
+
+      dup2(fd, STDOUT_FILENO);
+      close(fd);
+    }
 
     if(execvp(argv[0], argv) < 0)
       printf("Error during command execution\n");
@@ -166,11 +171,6 @@ void handleBeforePipeCall(char **argv) { // Last command
 
       int status;
       waitpid(pid, &status, 0);
-
-    if(ODD_PIPES)
-      printf("Last command finished: Read input from pipe1\n");
-    else
-      printf("Last command finished: Read input from pipe2\n");
 
   } else { // Fork error
       perror("fork()");
@@ -190,28 +190,7 @@ int charCounter(char* str, char character) {
   }
 
   return total;
-}
 
-int * getPipeIndexes(char **argv) {
-  int pipeCount = 0;
-  int * pipeIndexes = NULL;
-  int i = 0; // Holds argv pointer
-  int j = 0; // Holds pipeIndexes pointer
-
-  while(argv[i] != NULL) {
-
-    if(argv[i][0] == '|') {
-      pipeCount++;
-      pipeIndexes = (int *) realloc(pipeIndexes, (pipeCount * sizeof(int)));
-      pipeIndexes[j] = i;
-
-      j++;
-    }
-
-    i++;
-  }
-
-  return pipeIndexes;
 }
 
 void handlePipeCall(char** argv, int pipeCount) {
@@ -219,24 +198,50 @@ void handlePipeCall(char** argv, int pipeCount) {
   int i = 0; // Holds argv index
   int j = 0; // Holds cmd index
   int beforePipe = FALSE;
+  char* fileNameOut = NULL;
+  char* fileNameIn = NULL;
+  int append = FALSE;
 
-  char** cmd = (char**) malloc(1024*sizeof(char));
+  char** cmd = (char**) malloc(ARGV_AMOUNT_OF_LINES * sizeof(char*));
 
   while(argv[i] != NULL) {
 
-    if(argv[i][0] == '|') { // Found a pipe after the command
+    if(argv[i][0] == '|') { // Found a pipe operator after the command
       cmd[j] = NULL;
 
       if(beforePipe == TRUE) // If there is a pipe before it, then it's a PipePipeCall
         handlePipePipeCall(cmd);
       else                   // If there is not a pipe before it, then it's a AfterPipeCall
-        handleAfterPipeCall(cmd);
+        handleAfterPipeCall(cmd, fileNameIn);
 
       j = 0;
       beforePipe = TRUE;
-    } else {
-        cmd[j] = argv[i];
-        j++;
+    }
+    else if(argv[i][0] == '>') { // Found a redirect stdout operator
+
+        if(argv[i][1] == '>') {
+        append = TRUE;
+        fileNameOut = (char*) malloc(FILENAME_SIZE * sizeof(char));
+        fileNameOut = argv[i+1];
+        i += 2;
+      } else {
+        append = FALSE;
+        fileNameOut = (char*) malloc(FILENAME_SIZE * sizeof(char));
+        fileNameOut = argv[i+1];
+        j += 2;
+      }
+
+
+    }
+    else if(argv[i][0] == '<'){ // Found a redirect stdin operator
+        fileNameIn = (char*) malloc(FILENAME_SIZE * sizeof(char));
+        fileNameIn = argv[i+1];
+        j += 2;
+    }
+    else { // Simple command
+      cmd[j] = (char*) malloc(CMD_BUFFER_SIZE * sizeof(char*));
+      cmd[j] = argv[i];
+      j++;
     }
 
     i++;
@@ -245,19 +250,71 @@ void handlePipeCall(char** argv, int pipeCount) {
 
   //Last command is always a BeforePipeCall
   cmd[j] = NULL;
-  handleBeforePipeCall(cmd);
-
+  handleBeforePipeCall(cmd,  fileNameOut, append);
 }
 
 void handleUnitCall(char** argv) {
+
+  int i = 0; // Holds argv index
+  int j = 0; // Holds cmd index
+  char* fileNameIn = NULL;
+  char* fileNameOut = NULL;
+  int append = FALSE;
+  char** cmd = (char**) malloc(ARGV_AMOUNT_OF_LINES*sizeof(char*));
+
+  while(argv[i] != NULL) { // Takes fileNameIn and fileNameOut if present and builds the cmd
+    if(argv[i][0] == '>'){
+
+      if(argv[i][1] == '>') {
+        append = TRUE;
+        fileNameOut = (char*) malloc(FILENAME_SIZE * sizeof(char));
+        fileNameOut = argv[i+1];
+        i += 2;
+      } else {
+        append = FALSE;
+        fileNameOut = (char*) malloc(FILENAME_SIZE * sizeof(char));
+        fileNameOut = argv[i+1];
+        i += 2;
+      }
+
+    } else if(argv[i][0] == '<') {
+      fileNameIn = (char*) malloc(FILENAME_SIZE * sizeof(char));
+      fileNameIn = argv[i+1];
+      i += 2;
+    } else { // Simple command or argument
+      cmd[j] = (char*) malloc(CMD_BUFFER_SIZE * sizeof(char));
+      cmd[j] = argv[i];
+      i++;
+      j++;
+    }
+  }
+
+  cmd[j] = NULL;
 
   pid_t pid;
   pid = fork();
 
   if(pid == 0) { //Child process
 
-    if(execvp(argv[0], argv) < 0)
-      printf("Error during command execution");
+    if(fileNameIn) {
+     int fd = open(fileNameIn, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+     dup2(fd, STDIN_FILENO);
+     close(fd);
+    }
+    if(fileNameOut) {
+      int fd;
+      if(append == TRUE) {
+        fd = open(fileNameOut, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
+      } else {
+        fd = open(fileNameOut, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+      }
+
+     dup2(fd, STDOUT_FILENO);
+     close(fd);
+    }
+
+    if(execvp(cmd[0], cmd) < 0)
+      printf("Error during command execution\n");
 
   } else if(pid > 0) { // Main process
 
@@ -286,10 +343,6 @@ int main() {
       handlePipeCall(argv, pipeCount); // Handle commands with pipes
     else
       handleUnitCall(argv); // Handle unit command
-
-    free(input);
-    free(argv);
-
   }
 
 return 0;
