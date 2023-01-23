@@ -1,9 +1,17 @@
-# 📍 Linux Shell
+<h1 align="center">
+  ⭕ Linux Shell ⭕
+</h1>
 
-A Shell implementation for Linux 🙂 <br>
+<h4 align="center">A Shell implementation for Linux 🙂 <br>
 By far not a complete one, it implements some very basic features.
+</h4>
+<br>
+<p align="center">
+  <a href="#-features">Features</a>&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;
+  <a href="#-flow">Flow</a>
+</p>
 
-## Features
+## 📍 Features
 - [x] Unit commands with multiple parameters: 
   - ls -la
   <br>
@@ -21,5 +29,5 @@ By far not a complete one, it implements some very basic features.
   - sort < foo.txt | grep "x" > bar.txt
   - sort < foo.txt | grep "x" >> bar.txt
 
-## Flow
+## 📍 Flow
 ![image](https://user-images.githubusercontent.com/18491745/213947652-74e693ca-e89c-4d2a-87be-f8f20846f1ec.png)
